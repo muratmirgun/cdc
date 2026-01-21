@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: syncer
+  labels:
+    app: syncer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: syncer
+  template:
+    metadata:
+      labels:
+        app: syncer
+    spec:
+      containers:
+      - name: syncer
+        image: syncer:latest
+        ports:
+        - containerPort: 8081
+        env:
+        - name: POSTGRES_URI
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: uri
+        - name: KAFKA_BROKERS
+          value: "kafka:9092"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8081
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8081
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: syncer
+spec:
+  selector:
+    app: syncer
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8081

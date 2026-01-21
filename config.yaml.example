@@ -1,0 +1,28 @@
+# Example configuration for Watcher and Syncer services
+
+environment: "development"
+log_level: "info"
+
+mongodb:
+  uri: "mongodb://localhost:27017"
+  database: "game"
+  collection: "players"
+  connect_timeout: "10s"
+
+kafka:
+  brokers: ["localhost:9092"]
+  topic: "cdc.game.players"
+
+postgres:
+  uri: "postgres://user:pass@localhost:5432/game_db?sslmode=disable"
+  max_conns: 20
+  min_conns: 5
+  max_conn_lifetime: "1h"
+
+watcher:
+  resume_token_path: "./resume_token.json"
+
+syncer:
+  worker_count: 5
+  batch_size: 100
+  flush_interval: "500ms"

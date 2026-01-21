@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: 'watcher'
+    static_configs:
+      - targets: ['watcher:8080']
+
+  - job_name: 'syncer'
+    static_configs:
+      - targets: ['syncer:8081']

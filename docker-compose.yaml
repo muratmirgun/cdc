@@ -1,0 +1,144 @@
+services:
+  mongodb:
+    image: mongo:6.0
+    container_name: mongodb
+    command: ["--replSet", "rs0", "--bind_ip_all", "--port", "27017"]
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: echo "try { rs.status() } catch (err) { rs.initiate() }" | mongosh --port 27017 --quiet
+      interval: 5s
+      timeout: 10s
+      retries: 5
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      - "9094:9094"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    depends_on:
+      - zookeeper
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=pass
+      - POSTGRES_DB=game_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  watcher:
+    build:
+      context: .
+      dockerfile: docker/watcher.Dockerfile
+    container_name: watcher
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    environment:
+      - SERVICE_NAME=watcher
+      - MONGODB_URI=mongodb://mongodb:27017/?replicaSet=rs0
+      - MONGODB_DATABASE=game
+      - MONGODB_COLLECTION=players
+      - KAFKA_BROKERS=kafka:9092
+      - KAFKA_TOPIC=cdc.game.players
+      - POSTGRES_URI=postgres://user:pass@postgres:5432/game_db?sslmode=disable # Passed validation but not used
+      - WATCHER_RESUME_TOKEN_PATH=/data/resume_token.bin
+      - LOG_LEVEL=debug
+    volumes:
+      - watcher-data:/data
+
+  syncer:
+    build:
+      context: .
+      dockerfile: docker/syncer.Dockerfile
+    container_name: syncer
+    depends_on:
+      kafka:
+        condition: service_started
+      postgres:
+        condition: service_started
+    environment:
+      - SERVICE_NAME=syncer
+      - POSTGRES_URI=postgres://user:pass@postgres:5432/game_db?sslmode=disable
+      - KAFKA_BROKERS=kafka:9092
+      - KAFKA_TOPIC=cdc.game.players
+      - MONGODB_URI=mongodb://mongodb:27017 # Passed validation but not used
+      - MONGODB_DATABASE=dummy               # Passed validation but not used
+      - LOG_LEVEL=debug
+
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: prometheus
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:10.0.3
+    container_name: grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards/definitions
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  inserter:
+    build:
+      context: .
+      dockerfile: docker/watcher.Dockerfile
+    container_name: inserter
+    entrypoint: ["./watcher-inserter"]
+    command: ["--uri", "mongodb://mongodb:27017/?replicaSet=rs0", "--addr", ":8082"]
+    ports:
+      - "8082:8082"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/?replicaSet=rs0
+      - MONGODB_DATABASE=game
+
+  locust:
+    image: locustio/locust
+    container_name: locust
+    volumes:
+      - ./monitoring/locust:/mnt/locust
+    ports:
+      - "8089:8089"
+    command: -f /mnt/locust/locustfile.py --host http://inserter:8082
+    depends_on:
+      - inserter
+
+volumes:
+  watcher-data:
